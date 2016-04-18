@@ -86,12 +86,10 @@ pr_log(const char fmt[static 3], ...)
 		level = fmt[1] - '0';
 	}
 	va_list ap;
-	va_start(ap, fmt);
 	if (use_syslog) {
-		va_list sap;
-		va_copy(sap, ap);
-		vsyslog(level, fmt + 3, sap);
-		va_end(sap);
+		va_start(ap, fmt);
+		vsyslog(level, fmt + 3, ap);
+		va_end(ap);
 	}
 
 	while (use_kmsg) {
@@ -105,10 +103,9 @@ pr_log(const char fmt[static 3], ...)
 
 		/* TODO: write something that kmsg can accept */
 		char buf[256];
-		va_list sap;
-		va_copy(sap, ap);
+		va_start(ap, fmt);
 		int c = vsnprintf(buf, sizeof(buf), fmt, ap);
-		va_end(sap);
+		va_end(ap);
 		/* TODO: we probably should check the return here... */
 		ssize_t r = write(kmsg_fd, buf, c);
 		if (r != (ssize_t)c) {
@@ -121,6 +118,7 @@ pr_log(const char fmt[static 3], ...)
 	const char *f = fmt;
 	if (!err_include_level)
 		f+=3;
+	va_start(ap, fmt);
 	vfprintf(stderr, f, ap);
 	va_end(ap);
 }
