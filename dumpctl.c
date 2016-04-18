@@ -42,7 +42,7 @@ const char *default_path = CFG_COREDUMP_PATH;
 const char *opts = ":hd:";
 #define PRGMNAME_DEFAULT "dumpctl"
 
-static bool use_syslog = false;
+static bool use_syslog = true;
 static bool err_include_level = false;
 
 static
@@ -428,6 +428,8 @@ int main(int argc, char *argv[])
 {
 	char *dir = strdup(default_path);
 	const char *prgmname = argc?argv[0]:PRGMNAME_DEFAULT;
+	if (use_syslog)
+		openlog("dumpctl", LOG_CONS | LOG_PID, LOG_DAEMON);
 	
 	int err = 0;
 	int opt;

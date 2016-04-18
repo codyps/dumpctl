@@ -10,3 +10,4 @@ set -eu
 . "$(dirname $0)"/config.sh
 
 bin dumpctl dumpctl.c
+bin die die.c
