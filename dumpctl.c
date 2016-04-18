@@ -43,7 +43,9 @@ const char *opts = ":hd:";
 #define PRGMNAME_DEFAULT "dumpctl"
 
 static bool use_syslog = true;
+static bool use_kmsg = true;
 static bool err_include_level = false;
+static int kmsg_fd = -1;
 
 static
 void usage_(const char *prgmname, int e)
@@ -92,6 +94,29 @@ pr_log(const char fmt[static 3], ...)
 		va_end(sap);
 	}
 
+	while (use_kmsg) {
+		if (kmsg_fd == -1) {
+			kmsg_fd = open("/dev/kmsg", O_RDWR);
+			if (kmsg_fd == -1) {
+				/* TODO: log this failure somehow? */
+				break;
+			}
+		}
+
+		/* TODO: write something that kmsg can accept */
+		char buf[256];
+		va_list sap;
+		va_copy(sap, ap);
+		int c = vsnprintf(buf, sizeof(buf), fmt, ap);
+		va_end(sap);
+		/* TODO: we probably should check the return here... */
+		ssize_t r = write(kmsg_fd, buf, c);
+		if (r != (ssize_t)c) {
+			/* Whoops? I guess? */
+		}
+		break;
+	}
+
 	/* XXX: consider whether stdout is appropriate sometimes */
 	const char *f = fmt;
 	if (!err_include_level)
@@ -100,7 +125,7 @@ pr_log(const char fmt[static 3], ...)
 	va_end(ap);
 }
 
-#define PR_LOG(lvl, ...) pr_log("<" STR(lvl) ">" __VA_ARGS__)
+#define PR_LOG(lvl, ...) pr_log("<" STR(lvl) ">" PRGMNAME_DEFAULT ": " __VA_ARGS__)
 
 #define pr_emerg(...) PR_LOG(LOG_EMERG, __VA_ARGS__)
 #define pr_alert(...) PR_LOG(LOG_ALERT, __VA_ARGS__)
@@ -223,7 +248,7 @@ static ssize_t copy_file_to_fd(int out_fd, FILE *in_file)
 
 	for (;;) {
 		if (err > 10) {
-			fprintf(stderr, "Error: too many errors while copying file");
+			fprintf(stderr, "too many errors while copying file");
 			return -1;
 		}
 
@@ -249,13 +274,13 @@ static ssize_t copy_file_to_fd(int out_fd, FILE *in_file)
 			ssize_t wl = write(out_fd, fbuf_data_ptr(&f), fbuf_data(&f));
 			if (wl == 0) {
 				/* ??? */
-				fprintf(stderr, "Error: write returned zero bytes written, will retry\n");
+				fprintf(stderr, "write returned zero bytes written, will retry\n");
 				err++;
 				break;
 			}
 
 			if (wl < 0) {
-				fprintf(stderr, "Error: write failed due to %s\n", strerror(errno));
+				fprintf(stderr, "write failed due to %s\n", strerror(errno));
 				err++;
 				break;
 			}
@@ -271,15 +296,14 @@ static ssize_t copy_file_to_fd(int out_fd, FILE *in_file)
 static int act_store(char *dir, int argc, char *argv[])
 {
 	int err = 0;
-	int ct = argc - optind;
-	if (ct != 7 && ct != 8) {
-		pr_err("Error: store requires 7 or 8 arguments\n");
+	if (argc != 7 && argc != 8) {
+		pr_err("store requires 7 or 8 arguments, got %d\n", argc);
 		err++;
 	}
 
 	/* for store, we require an absolute path */
 	if (dir[0] != '/') {
-		pr_err("Error: store requires an absolute path, but got '%s'\n", dir);
+		pr_err("store requires an absolute path, but got '%s'\n", dir);
 		err++;
 	}
 
@@ -287,18 +311,18 @@ static int act_store(char *dir, int argc, char *argv[])
 		exit(EXIT_FAILURE);
 
 	/* FIXME: allow these to be non-fatal errors */
-	uintmax_t pid = parse_unum(argv[optind + 1], "pid"),
-		  uid = parse_unum(argv[optind + 2], "uid"),
-		  gid = parse_unum(argv[optind + 3], "gid"),
-		  sig = parse_unum(argv[optind + 4], "signal"),
-		  ts  = parse_unum(argv[optind + 5], "timestamp");
+	uintmax_t pid = parse_unum(argv[1], "pid"),
+		  uid = parse_unum(argv[2], "uid"),
+		  gid = parse_unum(argv[3], "gid"),
+		  sig = parse_unum(argv[4], "signal"),
+		  ts  = parse_unum(argv[5], "timestamp");
 	/* +6 = core limit */
-	const char *comm = argv[optind + 7];
+	const char *comm = argv[7];
 
 	/* FIXME: path gotten this way is mangled... for some reason. unmangle.
 	 * Also check if this can be confused (by embedded whitespace or other
 	 * junk */
-	char *path = argv[optind + 8];
+	char *path = argv[8];
 
 	/* create our storage area if it does not exist */
 	/* for each component in path, mkdir() */
@@ -311,7 +335,7 @@ static int act_store(char *dir, int argc, char *argv[])
 		int r = mkdir(dir, 0777);
 		if (r == -1) {
 			if (errno != EEXIST) {
-				pr_err("Error: could not create path '%s', mkdir failed: %s\n",
+				pr_err("could not create path '%s', mkdir failed: %s\n",
 						dir, strerror(errno));
 				exit(EXIT_FAILURE);
 			}
@@ -325,7 +349,7 @@ static int act_store(char *dir, int argc, char *argv[])
 
 	DIR *d = opendir(dir);
 	if (!d) {
-		pr_err("Error: failed to open storage dir '%s', opendir failed: %s\n",
+		pr_err("failed to open storage dir '%s', opendir failed: %s\n",
 				dir, strerror(errno));
 		exit(EXIT_FAILURE);
 	}
@@ -339,38 +363,38 @@ static int act_store(char *dir, int argc, char *argv[])
 	char path_buf[PATH_MAX];
 	size_t b = strftime(path_buf, sizeof(path_buf), "%F_%H:%M:%S", &tm);
 	if (b == 0) {
-		pr_err("Error: strftime failed\n");
+		pr_err("strftime failed\n");
 		exit(EXIT_FAILURE);
 	}
 
 	p = path_buf + b;
 	int r = snprintf(p, sizeof(path_buf) - b, ".pid=%ju.uid=%ju", pid, uid);
 	if (r < 0) {
-		pr_err("Error: could not format storage path\n");
+		pr_err("could not format storage path\n");
 		exit(EXIT_FAILURE);
 	}
 
 	if ((size_t)r > (sizeof(path_buf) - b - 1)) {
-		pr_err("Error: formatted storage path too long (needed %u bytes)\n", r);
+		pr_err("formatted storage path too long (needed %u bytes)\n", r);
 		exit(EXIT_FAILURE);
 	}
 
 	int store_fd = openat(dirfd(d), path_buf, O_CREAT | O_DIRECTORY | O_RDWR, 0755);
 	if (store_fd == -1) {
-		pr_err("Error: could not open storage dir '%s', %s\n", path_buf, strerror(errno));
+		pr_err("could not open storage dir '%s', %s\n", path_buf, strerror(errno));
 		exit(EXIT_FAILURE);
 	}
 
 	/* store some data! */
 	int core_fd = openat(store_fd, "core", O_CREAT|O_WRONLY, 0644);
 	if (core_fd == -1) {
-		pr_err("Error: could not open core file: %s\n", strerror(errno));
+		pr_err("could not open core file: %s\n", strerror(errno));
 		exit(EXIT_FAILURE);
 	}
 
 	r = copy_file_to_fd(core_fd, stdin);
 	if (r < 0) {
-		pr_err("Error: could not read/write core file\n");
+		pr_err("could not read/write core file\n");
 		exit(EXIT_FAILURE);
 	}
 
@@ -378,7 +402,7 @@ static int act_store(char *dir, int argc, char *argv[])
 
 	int info_fd = openat(store_fd, "info.txt", O_CREAT|O_WRONLY, 0644);
 	if (info_fd == -1) {
-		pr_err("Error: could not open info.txt file: %s\n", strerror(errno));
+		pr_err("could not open info.txt file: %s\n", strerror(errno));
 		exit(EXIT_FAILURE);
 	}
 
@@ -470,8 +494,8 @@ int main(int argc, char *argv[])
 	if (err)
 		usage(EXIT_FAILURE);
 
-	argc -= optind + 1;
-	argv += optind + 1;
+	argc -= optind;
+	argv += optind;
 	switch (act) {
 	case ACT_STORE:
 		use_syslog = true;
