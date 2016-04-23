@@ -4,7 +4,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <assert.h>
 #include <stdbool.h>
 #include <stdarg.h>
 
@@ -34,6 +33,15 @@
 
 #define STR_(x) #x
 #define STR(x) STR_(x)
+
+/* WE MUST NOT FAIL with something that would trigger us again, so use a
+ * hand-rolled assert that exits */
+#define assert(x) do { \
+	if (x) { \
+		pr_err("assert failed: %s:%s : %s\n", __FILE__, STR(__LINE__), #x); \
+		exit(EXIT_FAILURE); \
+	} \
+} while(0)
 
 #ifndef CFG_COREDUMP_PATH
 # define CFG_COREDUMP_PATH "/var/lib/systemd/coredump"
@@ -344,7 +352,15 @@ static int act_store(char *dir, int argc, char *argv[])
 		exit(EXIT_FAILURE);
 	}
 
-	int store_fd = openat(dirfd(d), path_buf, O_CREAT | O_DIRECTORY | O_RDWR, 0755);
+	/* XXX: consider making this a temp dir before we fill in the data */
+	r = mkdirat(dirfd(d), path_buf, 0755);
+	if (r < 0) {
+		/* XXX: handle directory collisions when many things fail near each other in time */
+		pr_err("failed to create dump directory: %s\n", strerror(errno));
+		exit(EXIT_FAILURE);
+	}
+
+	int store_fd = openat(dirfd(d), path_buf, O_DIRECTORY, 0755);
 	if (store_fd == -1) {
 		pr_err("could not open storage dir '%s', %s\n", path_buf, strerror(errno));
 		exit(EXIT_FAILURE);
@@ -441,6 +457,9 @@ int main(int argc, char *argv[])
 		err_include_level = true;
 		dup2(kmsg_fd, STDERR_FILENO);
 	}
+
+	/* XXX: can we detect early if we're recursing on ourselves? Being
+	 * called recursively is an easy way to use all system resources */
 
 	char *dir = strdup(default_path);
 	const char *prgmname = argc?argv[0]:PRGMNAME_DEFAULT;
