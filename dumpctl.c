@@ -8,6 +8,7 @@
 #include <stdbool.h>
 #include <stdarg.h>
 
+/* LOG_* levels */
 #include <syslog.h>
 
 /* getopt */
@@ -42,8 +43,6 @@ const char *default_path = CFG_COREDUMP_PATH;
 const char *opts = ":hd:";
 #define PRGMNAME_DEFAULT "dumpctl"
 
-static bool use_syslog = false;
-static bool use_kmsg = true;
 static bool err_include_level = true;
 static int kmsg_fd = -1;
 
@@ -81,39 +80,7 @@ __attribute__((format(printf,1,2)))
 static void
 pr_log(const char fmt[static 3], ...)
 {
-	int level = LOG_ALERT;
-	if (fmt[0] == '<' && fmt[2] == '>') {
-		level = fmt[1] - '0';
-	}
 	va_list ap;
-	if (use_syslog) {
-		va_start(ap, fmt);
-		vsyslog(level, fmt + 3, ap);
-		va_end(ap);
-	}
-
-	while (use_kmsg) {
-		if (kmsg_fd == -1) {
-			kmsg_fd = open("/dev/kmsg", O_RDWR);
-			if (kmsg_fd == -1) {
-				/* TODO: log this failure somehow? */
-				break;
-			}
-		}
-
-		/* TODO: write something that kmsg can accept */
-		char buf[256];
-		va_start(ap, fmt);
-		int c = vsnprintf(buf, sizeof(buf), fmt, ap);
-		va_end(ap);
-		/* TODO: we probably should check the return here... */
-		ssize_t r = write(kmsg_fd, buf, c);
-		if (r != (ssize_t)c) {
-			/* Whoops? I guess? */
-		}
-		break;
-	}
-
 	/* XXX: consider whether stdout is appropriate sometimes */
 	const char *f = fmt;
 	if (!err_include_level)
@@ -446,12 +413,37 @@ static int act_setup(const char *self)
 	return 0;
 }
 
+static bool fd_is_open(int fd)
+{
+	off_t r = lseek(fd, 0, SEEK_CUR);
+	return r != -1 || errno != EBADF;
+}
+
 int main(int argc, char *argv[])
 {
+	/*
+	 * When we're started by the kernel for 'store', we don't have the stdout & stderr filedescriptors open!
+	 */
+	kmsg_fd = open("/dev/kmsg", O_RDWR);
+	/* FIXME: fallback for kmsg open failure? */
+	/*
+	 * for our sanity, let's use kmsg as our output if we don't have
+	 * something hooked up. This nicely means we do "the right thing" when
+	 * the kernel is executing us directly.
+	 *
+	 * XXX: zero error checking here. not a good thing.
+	 */
+	if (!fd_is_open(STDOUT_FILENO)) {
+		err_include_level = true;
+		dup2(kmsg_fd, STDOUT_FILENO);
+	}
+	if (!fd_is_open(STDERR_FILENO)) {
+		err_include_level = true;
+		dup2(kmsg_fd, STDERR_FILENO);
+	}
+
 	char *dir = strdup(default_path);
 	const char *prgmname = argc?argv[0]:PRGMNAME_DEFAULT;
-	if (use_syslog)
-		openlog("dumpctl", LOG_CONS | LOG_PID, LOG_DAEMON);
 	
 	int err = 0;
 	int opt;
@@ -496,7 +488,6 @@ int main(int argc, char *argv[])
 	argv += optind;
 	switch (act) {
 	case ACT_STORE:
-		use_syslog = true;
 		return act_store(dir, argc, argv);
 	case ACT_SETUP:
 		return act_setup(prgmname);
