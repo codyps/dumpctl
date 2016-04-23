@@ -1,7 +1,5 @@
-#include <signal.h>
-
 int main(void)
 {
-	kill(0, SIGSEGV);
+	__builtin_abort();
 	return 0;
 }

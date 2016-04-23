@@ -42,9 +42,9 @@ const char *default_path = CFG_COREDUMP_PATH;
 const char *opts = ":hd:";
 #define PRGMNAME_DEFAULT "dumpctl"
 
-static bool use_syslog = true;
+static bool use_syslog = false;
 static bool use_kmsg = true;
-static bool err_include_level = false;
+static bool err_include_level = true;
 static int kmsg_fd = -1;
 
 static
@@ -294,8 +294,8 @@ static ssize_t copy_file_to_fd(int out_fd, FILE *in_file)
 static int act_store(char *dir, int argc, char *argv[])
 {
 	int err = 0;
-	if (argc != 7 && argc != 8) {
-		pr_err("store requires 7 or 8 arguments, got %d\n", argc);
+	if (argc != 8 && argc != 9) {
+		pr_err("store requires 8 or 9 arguments, got %d\n", argc);
 		err++;
 	}
 
