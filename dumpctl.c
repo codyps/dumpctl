@@ -75,8 +75,10 @@
 #ifndef CFG_COREDUMP_PATH
 # define CFG_COREDUMP_PATH "/var/lib/systemd/coredump"
 #endif
+static
 const char *default_path = CFG_COREDUMP_PATH;
 
+static
 const char *opts = ":hd:";
 #define PRGMNAME_DEFAULT "dumpctl"
 
