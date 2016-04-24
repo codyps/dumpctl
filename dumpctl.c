@@ -31,15 +31,44 @@
 /* openat */
 #include <fcntl.h>
 
+#include <sys/prctl.h>
+
+/*
+ * We don't use any threads or signals, so try using the unlocked_stdio operations
+ */
+#define fread fread_unlocked
+#define feof feof_unlocked
+#define fwrite fwrite_unlocked
+#define ferror ferror_unlocked
+#define fileno fileno_unlocked
+#define fflush fflush_unlocked
+
+
 #define STR_(x) #x
 #define STR(x) STR_(x)
 
 /* WE MUST NOT FAIL with something that would trigger us again, so use a
  * hand-rolled assert that exits */
 #define assert(x) do { \
-	if (x) { \
+	if (!(x)) { \
 		pr_err("assert failed: %s:%s : %s\n", __FILE__, STR(__LINE__), #x); \
 		exit(EXIT_FAILURE); \
+	} \
+} while(0)
+
+/* Try to get a bit more info. Unfortunately we're handicapped by our inability
+ * to select a function based on the type of a value effectively (we could try
+ * using _Generic, but it would be a bunch of work and not allow easy
+ * extensibility).
+ */
+#define assert_cmp(left, cmp, right) do { \
+	__typeof__(left) __assert_cmp_left = (left); \
+	__typeof__(right) __assert_cmp_right = (right); \
+	if (!(__assert_cmp_left cmp __assert_cmp_right)) { \
+		pr_err("assert failed: %s:%s : %s %s %s -> %jd %s %jd\n", \
+				__FILE__, STR(__LINE__), \
+				#left, #cmp, #right, \
+				(uintmax_t)__assert_cmp_left, #cmp, (uintmax_t)__assert_cmp_right); \
 	} \
 } while(0)
 
@@ -126,7 +155,7 @@ static size_t fbuf_space(struct fbuf *f)
 
 static void fbuf_feed(struct fbuf *f, size_t n)
 {
-	assert(fbuf_space(f) <= n);
+	assert_cmp(fbuf_space(f), <=, n);
 	f->bytes_in_buf += n;
 }
 
@@ -221,7 +250,7 @@ static ssize_t copy_file_to_fd(int out_fd, FILE *in_file)
 
 	for (;;) {
 		if (err > 10) {
-			fprintf(stderr, "too many errors while copying file");
+			pr_err("too many errors while copying file");
 			return -1;
 		}
 
@@ -231,13 +260,14 @@ static ssize_t copy_file_to_fd(int out_fd, FILE *in_file)
 				/* done reading! */	
 				done_reading = true;
 			} else {
-				fprintf(stderr, "Error reading input core file\n");
+				pr_warn("Error reading input core file\n");
 				err++;
 				continue;
 			}
 		}
 		fbuf_feed(&f, rl);
 		read_bytes += rl;
+		pr_info("read %zu bytes (%zu total)\n", rl, read_bytes);
 
 		do {
 			if (fbuf_data(&f) == 0) {
@@ -260,6 +290,7 @@ static ssize_t copy_file_to_fd(int out_fd, FILE *in_file)
 
 			fbuf_eat(&f, wl);
 			written_bytes += wl;
+			pr_info("write %zd bytes (%zu total)\n", wl, written_bytes);
 
 		/* if we've go space to read, do that again. If not, keep trying to write */
 		} while (fbuf_space(&f) == 0 || done_reading);
@@ -438,6 +469,9 @@ static bool fd_is_open(int fd)
 
 int main(int argc, char *argv[])
 {
+        /* Make sure we never enter a loop */
+        (void) prctl(PR_SET_DUMPABLE, 0);
+
 	/*
 	 * When we're started by the kernel for 'store', we don't have the stdout & stderr filedescriptors open!
 	 */
@@ -451,6 +485,8 @@ int main(int argc, char *argv[])
 	 * XXX: zero error checking here. not a good thing.
 	 * XXX: the open() of kmsg_fd prior to this might fill in one of these!
 	 */
+	if (kmsg_fd == STDOUT_FILENO || kmsg_fd == STDERR_FILENO)
+		err_include_level = true;
 	if (!fd_is_open(STDOUT_FILENO)) {
 		err_include_level = true;
 		dup2(kmsg_fd, STDOUT_FILENO);
