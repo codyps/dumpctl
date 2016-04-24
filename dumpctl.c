@@ -51,7 +51,7 @@ const char *default_path = CFG_COREDUMP_PATH;
 const char *opts = ":hd:";
 #define PRGMNAME_DEFAULT "dumpctl"
 
-static bool err_include_level = true;
+static bool err_include_level = false;
 static int kmsg_fd = -1;
 
 static
@@ -65,10 +65,10 @@ void usage_(const char *prgmname, int e)
 	fprintf(f,
 "Usage: %s [options] <action-and-args...>\n"
 "       %s [options] store <global-pid> <uid> <gid> <signal-number> <unix-timestamp> <-%%c?-> <executable-filename> <exe-path>\n"
-"	%s [options] setup\n"
-"	%s [options] list\n"
-"	%s [options] info\n"
-"	%s [options] gdb\n"
+"       %s [options] setup\n"
+"       %s [options] list\n"
+"       %s [options] info\n"
+"       %s [options] gdb\n"
 "\n"
 "Use me to handle your coredumps:\n"
 "    # echo '|%s store %%P %%u %%g %%s %%t %%c %%e %%E' | /proc/sys/kernel/core_pattern\n"
@@ -114,12 +114,6 @@ struct fbuf {
 	uint8_t buf[4096];
 };
 
-static void fbuf_feed(struct fbuf *f, size_t n)
-{
-	f->bytes_in_buf += n;
-	assert(f->bytes_in_buf < n);
-}
-
 static void *fbuf_space_ptr(struct fbuf *f)
 {
 	return f->buf + f->bytes_in_buf;
@@ -128,6 +122,12 @@ static void *fbuf_space_ptr(struct fbuf *f)
 static size_t fbuf_space(struct fbuf *f)
 {
 	return sizeof(f->buf) - f->bytes_in_buf;
+}
+
+static void fbuf_feed(struct fbuf *f, size_t n)
+{
+	assert(fbuf_space(f) <= n);
+	f->bytes_in_buf += n;
 }
 
 static void *fbuf_data_ptr(struct fbuf *f)
@@ -142,7 +142,7 @@ static size_t fbuf_data(struct fbuf *f)
 
 static void fbuf_eat(struct fbuf *f, size_t n)
 {
-	assert(n <= f->bytes_in_buf);
+	assert(n <= fbuf_data(f));
 	memmove(f->buf, f->buf + n, f->bytes_in_buf - n);
 	f->bytes_in_buf -= n;
 }
@@ -412,20 +412,21 @@ static int act_setup(const char *self)
 		exit(EXIT_FAILURE);
 	}
 
+	pr_info("registering using path '%s'\n", resolved_path);
+
 	FILE *f = fopen("/proc/sys/kernel/core_pattern", "w");
 	if (!f) {
-		pr_err("Error: could not open core_pattern file to configure system, check perms\n");
+		pr_err("could not open /proc/sys/kernel/core_pattern file to configure system: %s\n", strerror(errno));
 		exit(EXIT_FAILURE);
 	}
 
-	int r = fprintf(f, "| %s store %%P %%u %%g %%s %%t %%c %%e %%E", self);
+	int r = fprintf(f, "| %s store %%P %%u %%g %%s %%t %%c %%e %%E", resolved_path);
 	if (r <= 0) {
-		pr_err("Error: failed to write to file (but open worked): %s\n", strerror(errno));
+		pr_err("failed to write to core_pattern (but open worked): %s\n", strerror(errno));
 		exit(EXIT_FAILURE);
 	}
 
 	fclose(f);
-
 	return 0;
 }
 
@@ -448,6 +449,7 @@ int main(int argc, char *argv[])
 	 * the kernel is executing us directly.
 	 *
 	 * XXX: zero error checking here. not a good thing.
+	 * XXX: the open() of kmsg_fd prior to this might fill in one of these!
 	 */
 	if (!fd_is_open(STDOUT_FILENO)) {
 		err_include_level = true;
