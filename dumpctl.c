@@ -435,15 +435,24 @@ static int act_store(char *dir, int argc, char *argv[])
 
 static int act_setup(const char *self)
 {
-	/* If `self` is not complete & absolute, we neet to convert it to be so */
-	char path[PATH_MAX];
-	char *resolved_path = realpath(self, path);
-	if (!resolved_path) {
-		pr_err("Error: failed to determined real path: %s\n", strerror(errno));
-		exit(EXIT_FAILURE);
+	char path[PATH_MAX + 1];
+	ssize_t n = readlink("/proc/self/exe", path, sizeof(path) -1);
+	if (n == -1) {
+		pr_warn("could not read /proc/self/exe: %s\n", strerror(errno));
+		pr_notice("falling back to using argv[0]\n");
+		/* If `self` is not complete & absolute, we neet to convert it to be so */
+		char *resolved_path = realpath(self, path);
+		if (!resolved_path) {
+			pr_err("Error: failed to determined real path: %s\n", strerror(errno));
+			exit(EXIT_FAILURE);
+		}
+	} else {
+		/* "Conforming applications should not assume that the returned
+		 * contents of the symbolic link are null-terminated" */
+		path[n] = '\0';
 	}
 
-	pr_info("registering using path '%s'\n", resolved_path);
+	pr_info("registering using path '%s'\n", path);
 
 	FILE *f = fopen("/proc/sys/kernel/core_pattern", "w");
 	if (!f) {
@@ -451,7 +460,7 @@ static int act_setup(const char *self)
 		exit(EXIT_FAILURE);
 	}
 
-	int r = fprintf(f, "| %s store %%P %%u %%g %%s %%t %%c %%e %%E", resolved_path);
+	int r = fprintf(f, "| %s store %%P %%u %%g %%s %%t %%c %%e %%E", path);
 	if (r <= 0) {
 		pr_err("failed to write to core_pattern (but open worked): %s\n", strerror(errno));
 		exit(EXIT_FAILURE);
