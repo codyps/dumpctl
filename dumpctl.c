@@ -303,6 +303,7 @@ static ssize_t copy_file_to_fd(int out_fd, FILE *in_file)
 
 		if (read_bytes >= CFG_CORE_LIMIT) {
 			pr_warn("not storing core, too large\n");
+			exit(EXIT_FAILURE);
 		}
 	}
 }
