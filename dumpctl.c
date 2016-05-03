@@ -303,7 +303,7 @@ static ssize_t copy_file_to_fd(int out_fd, FILE *in_file)
 
 		if (read_bytes >= CFG_CORE_LIMIT) {
 			pr_warn("not storing core, too large\n");
-			exit(EXIT_FAILURE);
+			return -1;
 		}
 	}
 }
@@ -338,6 +338,9 @@ static int act_store(char *dir, int argc, char *argv[])
 	 * Also check if this can be confused (by embedded whitespace or other
 	 * junk */
 	char *path = argv[8];
+
+	pr_alert("'%s' aborted with signal %ju (pid = %ju, uid = %ju, path = %s)\n",
+			comm, sig, pid, uid, path);
 
 	/* create our storage area if it does not exist */
 	/* for each component in path, mkdir() */
@@ -417,8 +420,8 @@ static int act_store(char *dir, int argc, char *argv[])
 
 	r = copy_file_to_fd(core_fd, stdin);
 	if (r < 0) {
-		pr_err("could not read/write core file\n");
-		exit(EXIT_FAILURE);
+		/* error printing already handled, just avoid storage */
+		unlinkat(store_fd, "core", 0);
 	}
 
 	close(core_fd);
