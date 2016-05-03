@@ -273,7 +273,7 @@ static ssize_t copy_file_to_fd(int out_fd, FILE *in_file)
 		}
 		fbuf_feed(&f, rl);
 		read_bytes += rl;
-		pr_info("read %zu bytes (%zu total)\n", rl, read_bytes);
+		//pr_info("read %zu bytes (%zu total)\n", rl, read_bytes);
 
 		do {
 			if (fbuf_data(&f) == 0) {
@@ -296,7 +296,7 @@ static ssize_t copy_file_to_fd(int out_fd, FILE *in_file)
 
 			fbuf_eat(&f, wl);
 			written_bytes += wl;
-			pr_info("write %zd bytes (%zu total)\n", wl, written_bytes);
+			//pr_info("write %zd bytes (%zu total)\n", wl, written_bytes);
 
 		/* if we've go space to read, do that again. If not, keep trying to write */
 		} while (fbuf_space(&f) == 0 || done_reading);
