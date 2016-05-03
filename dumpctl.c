@@ -33,6 +33,10 @@
 
 #include <sys/prctl.h>
 
+#ifndef CFG_CORE_LIMIT
+#define CFG_CORE_LIMIT (1024 * 1024 * 1024)
+#endif
+
 /*
  * We don't use any threads or signals, so try using the unlocked_stdio operations
  */
@@ -294,6 +298,10 @@ static ssize_t copy_file_to_fd(int out_fd, FILE *in_file)
 
 		/* if we've go space to read, do that again. If not, keep trying to write */
 		} while (fbuf_space(&f) == 0 || done_reading);
+
+		if (read_bytes >= CFG_CORE_LIMIT) {
+			pr_warn("not storing core, too large\n");
+		}
 	}
 }
 
