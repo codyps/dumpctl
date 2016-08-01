@@ -339,7 +339,7 @@ static int act_store(char *dir, int argc, char *argv[])
 	 * junk */
 	char *path = argv[8];
 
-	pr_alert("'%s' aborted with signal %ju (pid = %ju, uid = %ju, path = %s)\n",
+	pr_err("'%s' aborted with signal %ju (pid = %ju, uid = %ju, path = %s)\n",
 			comm, sig, pid, uid, path);
 
 	/* create our storage area if it does not exist */
@@ -490,6 +490,13 @@ static bool fd_is_open(int fd)
 	return r != -1 || errno != EBADF;
 }
 
+static void freep(void *p_)
+{
+	void **p = p_;
+	if (*p)
+		free(*p);
+}
+
 int main(int argc, char *argv[])
 {
         /* Make sure we never enter a loop */
@@ -522,6 +529,7 @@ int main(int argc, char *argv[])
 	/* XXX: can we detect early if we're recursing on ourselves? Being
 	 * called recursively is an easy way to use all system resources */
 
+	__attribute__((cleanup(freep)))
 	char *dir = strdup(default_path);
 	const char *prgmname = argc?argv[0]:PRGMNAME_DEFAULT;
 	
