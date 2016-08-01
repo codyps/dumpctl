@@ -447,6 +447,51 @@ static int act_store(char *dir, int argc, char *argv[])
 	return 0;
 }
 
+static void fclosep(FILE **p)
+{
+	if (*p)
+		fclose(*p);
+}
+
+static int setup_temporal(const char *path)
+{
+	pr_info("registering using path '%s'\n", path);
+
+	__attribute__((cleanup(fclosep)))
+	FILE *f = fopen("/proc/sys/kernel/core_pattern", "w");
+	if (!f) {
+		pr_err("could not open /proc/sys/kernel/core_pattern file to configure system: %s\n", strerror(errno));
+		return -1;
+	}
+
+	int r = fprintf(f, "|%s store %%P %%u %%g %%s %%t %%c %%e %%E", path);
+	if (r <= 0) {
+		pr_err("failed to write to core_pattern (but open worked): %s\n", strerror(errno));
+		return -1;
+	}
+
+	return 0;
+}
+
+static int setup_perm(const char *path)
+{
+	/* TODO: use create+rename to avoid intermediate */
+	__attribute__((cleanup(fclosep)))
+	FILE *f = fopen("/etc/sysctl.d/80-dumpctl.conf", "w");
+	if (!f) {
+		pr_err("could not open /etc/sysctl.d/80-dumpctl.conf file to configure system: %s\n", strerror(errno));
+		return -1;
+	}
+
+	int r = fprintf(f, "kernel.core_pattern=|%s store %%P %%u %%g %%s %%t %%c %%e %%E\n", path);
+	if (r <= 0) {
+		pr_err("failed to write core_pattern to 80-dumpctl.conf (but open worked): %s\n", strerror(errno));
+		return -1;
+	}
+
+	return 0;
+}
+
 static int act_setup(const char *self)
 {
 	char path[PATH_MAX + 1];
@@ -466,21 +511,14 @@ static int act_setup(const char *self)
 		path[n] = '\0';
 	}
 
-	pr_info("registering using path '%s'\n", path);
+	int r = setup_temporal(path);
+	if (r < 0)
+		return r;
 
-	FILE *f = fopen("/proc/sys/kernel/core_pattern", "w");
-	if (!f) {
-		pr_err("could not open /proc/sys/kernel/core_pattern file to configure system: %s\n", strerror(errno));
-		exit(EXIT_FAILURE);
-	}
+	r = setup_perm(path);
+	if (r < 0)
+		return r;
 
-	int r = fprintf(f, "| %s store %%P %%u %%g %%s %%t %%c %%e %%E", path);
-	if (r <= 0) {
-		pr_err("failed to write to core_pattern (but open worked): %s\n", strerror(errno));
-		exit(EXIT_FAILURE);
-	}
-
-	fclose(f);
 	return 0;
 }
 
@@ -493,8 +531,7 @@ static bool fd_is_open(int fd)
 static void freep(void *p_)
 {
 	void **p = p_;
-	if (*p)
-		free(*p);
+	free(*p);
 }
 
 int main(int argc, char *argv[])
