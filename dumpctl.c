@@ -33,6 +33,11 @@
 
 #include <sys/prctl.h>
 
+#define CFG_BACKTRACE 1
+#if CFG_BACKTRACE
+#include <execinfo.h>
+#endif
+
 #ifndef CFG_CORE_LIMIT
 #define CFG_CORE_LIMIT (1024 * 1024 * 1024)
 #endif
@@ -47,15 +52,60 @@
 #define fileno fileno_unlocked
 #define fflush fflush_unlocked
 
-
 #define STR_(x) #x
 #define STR(x) STR_(x)
+#define ARRAY_SIZE(x) (sizeof(x)/sizeof((x)[0]))
+
+static bool err_include_level = false;
+static int kmsg_fd = -1;
+
+__attribute__((format(printf,1,2)))
+static void
+pr_log(const char fmt[static 3], ...)
+{
+	va_list ap;
+	/* XXX: consider whether stdout is appropriate sometimes */
+	const char *f = fmt;
+	if (!err_include_level)
+		f+=3;
+	va_start(ap, fmt);
+	vfprintf(stderr, f, ap);
+	va_end(ap);
+}
+
+#define PRGMNAME_DEFAULT "dumpctl"
+#define PR_LOG(lvl, ...) pr_log("<" STR(lvl) ">" PRGMNAME_DEFAULT ": " __VA_ARGS__)
+
+#define pr_emerg(...) PR_LOG(LOG_EMERG, __VA_ARGS__)
+#define pr_alert(...) PR_LOG(LOG_ALERT, __VA_ARGS__)
+#define pr_crit(...) PR_LOG(LOG_CRIT, __VA_ARGS__)
+#define pr_err(...) PR_LOG(LOG_ERR, __VA_ARGS__)
+#define pr_warn(...) PR_LOG(LOG_WARNING, __VA_ARGS__)
+#define pr_notice(...) PR_LOG(LOG_NOTICE, __VA_ARGS__)
+#define pr_info(...) PR_LOG(LOG_INFO, __VA_ARGS__)
+#define pr_debug(...) PR_LOG(LOG_DEBUG, __VA_ARGS__)
+
+#if CFG_BACKTRACE
+static void print_backtrace(void)
+{
+	void *bt[256];
+	int ct = backtrace(bt, ARRAY_SIZE(bt));
+
+	if (ct == ARRAY_SIZE(bt)) {
+		pr_warn("backtrace may be truncated, try enlarging buffer\n");
+	}
+
+	backtrace_symbols_fd(bt, ct, STDOUT_FILENO);
+}
+#endif
+
 
 /* WE MUST NOT FAIL with something that would trigger us again, so use a
  * hand-rolled assert that exits */
 #define assert(x) do { \
 	if (!(x)) { \
 		pr_err("assert failed: %s:%s : %s\n", __FILE__, STR(__LINE__), #x); \
+		print_backtrace(); \
 		exit(EXIT_FAILURE); \
 	} \
 } while(0)
@@ -73,6 +123,8 @@
 				__FILE__, STR(__LINE__), \
 				#left, #cmp, #right, \
 				(uintmax_t)__assert_cmp_left, #cmp, (uintmax_t)__assert_cmp_right); \
+		print_backtrace(); \
+		exit(EXIT_FAILURE); \
 	} \
 } while(0)
 
@@ -84,10 +136,6 @@ const char *default_path = CFG_COREDUMP_PATH;
 
 static
 const char *opts = ":hd:";
-#define PRGMNAME_DEFAULT "dumpctl"
-
-static bool err_include_level = false;
-static int kmsg_fd = -1;
 
 static
 void usage_(const char *prgmname, int e)
@@ -119,31 +167,6 @@ void usage_(const char *prgmname, int e)
 }
 #define usage(e) usage_(prgmname, e)
 
-__attribute__((format(printf,1,2)))
-static void
-pr_log(const char fmt[static 3], ...)
-{
-	va_list ap;
-	/* XXX: consider whether stdout is appropriate sometimes */
-	const char *f = fmt;
-	if (!err_include_level)
-		f+=3;
-	va_start(ap, fmt);
-	vfprintf(stderr, f, ap);
-	va_end(ap);
-}
-
-#define PR_LOG(lvl, ...) pr_log("<" STR(lvl) ">" PRGMNAME_DEFAULT ": " __VA_ARGS__)
-
-#define pr_emerg(...) PR_LOG(LOG_EMERG, __VA_ARGS__)
-#define pr_alert(...) PR_LOG(LOG_ALERT, __VA_ARGS__)
-#define pr_crit(...) PR_LOG(LOG_CRIT, __VA_ARGS__)
-#define pr_err(...) PR_LOG(LOG_ERR, __VA_ARGS__)
-#define pr_warn(...) PR_LOG(LOG_WARNING, __VA_ARGS__)
-#define pr_notice(...) PR_LOG(LOG_NOTICE, __VA_ARGS__)
-#define pr_info(...) PR_LOG(LOG_INFO, __VA_ARGS__)
-#define pr_debug(...) PR_LOG(LOG_DEBUG, __VA_ARGS__)
-
 struct fbuf {
 	size_t bytes_in_buf;
 	uint8_t buf[4096];
@@ -161,7 +184,7 @@ static size_t fbuf_space(struct fbuf *f)
 
 static void fbuf_feed(struct fbuf *f, size_t n)
 {
-	assert_cmp(fbuf_space(f), <=, n);
+	assert_cmp(n, <=, fbuf_space(f));
 	f->bytes_in_buf += n;
 }
 
@@ -323,7 +346,7 @@ static int act_store(char *dir, int argc, char *argv[])
 	}
 
 	if (err)
-		exit(EXIT_FAILURE);
+		return EXIT_FAILURE;
 
 	/* FIXME: allow these to be non-fatal errors */
 	uintmax_t pid = parse_unum(argv[1], "pid"),
@@ -355,7 +378,7 @@ static int act_store(char *dir, int argc, char *argv[])
 			if (errno != EEXIST) {
 				pr_err("could not create path '%s', mkdir failed: %s\n",
 						dir, strerror(errno));
-				exit(EXIT_FAILURE);
+				return EXIT_FAILURE;
 			}
 		}
 
@@ -369,7 +392,7 @@ static int act_store(char *dir, int argc, char *argv[])
 	if (!d) {
 		pr_err("failed to open storage dir '%s', opendir failed: %s\n",
 				dir, strerror(errno));
-		exit(EXIT_FAILURE);
+		return EXIT_FAILURE;
 	}
 	struct tm tm;
 	/* FIXME: check overflow */
@@ -382,19 +405,19 @@ static int act_store(char *dir, int argc, char *argv[])
 	size_t b = strftime(path_buf, sizeof(path_buf), "%F_%H:%M:%S", &tm);
 	if (b == 0) {
 		pr_err("strftime failed\n");
-		exit(EXIT_FAILURE);
+		return EXIT_FAILURE;
 	}
 
 	p = path_buf + b;
 	int r = snprintf(p, sizeof(path_buf) - b, ".pid=%ju.uid=%ju", pid, uid);
 	if (r < 0) {
 		pr_err("could not format storage path\n");
-		exit(EXIT_FAILURE);
+		return EXIT_FAILURE;
 	}
 
 	if ((size_t)r > (sizeof(path_buf) - b - 1)) {
 		pr_err("formatted storage path too long (needed %u bytes)\n", r);
-		exit(EXIT_FAILURE);
+		return EXIT_FAILURE;
 	}
 
 	/* XXX: consider making this a temp dir before we fill in the data */
@@ -402,20 +425,20 @@ static int act_store(char *dir, int argc, char *argv[])
 	if (r < 0) {
 		/* XXX: handle directory collisions when many things fail near each other in time */
 		pr_err("failed to create dump directory: %s\n", strerror(errno));
-		exit(EXIT_FAILURE);
+		return EXIT_FAILURE;
 	}
 
 	int store_fd = openat(dirfd(d), path_buf, O_DIRECTORY, 0755);
 	if (store_fd == -1) {
 		pr_err("could not open storage dir '%s', %s\n", path_buf, strerror(errno));
-		exit(EXIT_FAILURE);
+		return EXIT_FAILURE;
 	}
 
 	/* store some data! */
 	int core_fd = openat(store_fd, "core", O_CREAT|O_WRONLY, 0644);
 	if (core_fd == -1) {
 		pr_err("could not open core file: %s\n", strerror(errno));
-		exit(EXIT_FAILURE);
+		return EXIT_FAILURE;
 	}
 
 	r = copy_file_to_fd(core_fd, stdin);
@@ -429,7 +452,7 @@ static int act_store(char *dir, int argc, char *argv[])
 	int info_fd = openat(store_fd, "info.txt", O_CREAT|O_WRONLY, 0644);
 	if (info_fd == -1) {
 		pr_err("could not open info.txt file: %s\n", strerror(errno));
-		exit(EXIT_FAILURE);
+		return EXIT_FAILURE;
 	}
 
 	dprintf(info_fd,
@@ -503,7 +526,7 @@ static int act_setup(const char *self)
 		char *resolved_path = realpath(self, path);
 		if (!resolved_path) {
 			pr_err("Error: failed to determined real path: %s\n", strerror(errno));
-			exit(EXIT_FAILURE);
+			return EXIT_FAILURE;
 		}
 	} else {
 		/* "Conforming applications should not assume that the returned
@@ -618,7 +641,7 @@ int main(int argc, char *argv[])
 		return act_setup(prgmname);
 	default:
 		pr_warn("action %s is unimplimented\n", action);
-		exit(EXIT_FAILURE);
+		return EXIT_FAILURE;
 		;
 	}
 
