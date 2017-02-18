@@ -333,6 +333,7 @@ static ssize_t copy_file_to_fd(int out_fd, FILE *in_file)
 
 static int act_store(char *dir, int argc, char *argv[])
 {
+	int e = EXIT_FAILURE;
 	int err = 0;
 	if (argc != 8 && argc != 9) {
 		pr_err("store requires 8 or 9 arguments, got %d\n", argc);
@@ -392,7 +393,7 @@ static int act_store(char *dir, int argc, char *argv[])
 	if (!d) {
 		pr_err("failed to open storage dir '%s', opendir failed: %s\n",
 				dir, strerror(errno));
-		return EXIT_FAILURE;
+		goto e_opendir;
 	}
 	struct tm tm;
 	/* FIXME: check overflow */
@@ -405,19 +406,19 @@ static int act_store(char *dir, int argc, char *argv[])
 	size_t b = strftime(path_buf, sizeof(path_buf), "%F_%H:%M:%S", &tm);
 	if (b == 0) {
 		pr_err("strftime failed\n");
-		return EXIT_FAILURE;
+		goto e_storefd;
 	}
 
 	p = path_buf + b;
 	int r = snprintf(p, sizeof(path_buf) - b, ".pid=%ju.uid=%ju", pid, uid);
 	if (r < 0) {
 		pr_err("could not format storage path\n");
-		return EXIT_FAILURE;
+		goto e_storefd;
 	}
 
 	if ((size_t)r > (sizeof(path_buf) - b - 1)) {
 		pr_err("formatted storage path too long (needed %u bytes)\n", r);
-		return EXIT_FAILURE;
+		goto e_storefd;
 	}
 
 	/* XXX: consider making this a temp dir before we fill in the data */
@@ -425,20 +426,20 @@ static int act_store(char *dir, int argc, char *argv[])
 	if (r < 0) {
 		/* XXX: handle directory collisions when many things fail near each other in time */
 		pr_err("failed to create dump directory: %s\n", strerror(errno));
-		return EXIT_FAILURE;
+		goto e_storefd;
 	}
 
 	int store_fd = openat(dirfd(d), path_buf, O_DIRECTORY, 0755);
 	if (store_fd == -1) {
 		pr_err("could not open storage dir '%s', %s\n", path_buf, strerror(errno));
-		return EXIT_FAILURE;
+		goto e_storefd;
 	}
 
 	/* store some data! */
 	int core_fd = openat(store_fd, "core", O_CREAT|O_WRONLY, 0644);
 	if (core_fd == -1) {
 		pr_err("could not open core file: %s\n", strerror(errno));
-		return EXIT_FAILURE;
+		goto e_corefd;
 	}
 
 	r = copy_file_to_fd(core_fd, stdin);
@@ -452,7 +453,7 @@ static int act_store(char *dir, int argc, char *argv[])
 	int info_fd = openat(store_fd, "info.txt", O_CREAT|O_WRONLY, 0644);
 	if (info_fd == -1) {
 		pr_err("could not open info.txt file: %s\n", strerror(errno));
-		return EXIT_FAILURE;
+		goto e_infofd;
 	}
 
 	dprintf(info_fd,
@@ -465,9 +466,17 @@ static int act_store(char *dir, int argc, char *argv[])
 			"path: %s\n",
 		pid, uid, gid, sig, ts, comm, path);
 
-	close(info_fd);
+	e = EXIT_SUCCESS;
 
-	return 0;
+	close(info_fd);
+e_infofd:
+	close(core_fd);
+e_corefd:
+	close(store_fd);
+e_storefd:
+	closedir(d);
+e_opendir:
+	return e;
 }
 
 static void fclosep(FILE **p)
